@@ -210,7 +210,7 @@ with st.sidebar:
     uploaded_kml = st.file_uploader("Archivo KML (Polígonos)", type=['kml', 'xml'])
     
     st.markdown("---")
-    st.info("v3.0.0 | SOLEX Secure © 2025")
+    st.info("v3.0.1 (Fix Donut) | SOLEX Secure © 2025")
 
 # ==============================================================================
 # 4. LÓGICA PRINCIPAL (MAIN LOOP)
@@ -316,8 +316,8 @@ if df_raw is not None:
         with col_d2:
             st.subheader("Resumen Fitosanitario")
             if 'Estado_Salud' in df.columns:
-                # Donut Chart con anotación central
-                fig_don = px.donut(
+                # CORRECCIÓN AQUÍ: px.pie en lugar de px.donut
+                fig_don = px.pie(
                     df, names='Estado_Salud', hole=0.6,
                     color_discrete_sequence=['#4caf50', '#cddc39', '#ff9800', '#f44336', '#9e9e9e']
                 )
