@@ -210,7 +210,7 @@ with st.sidebar:
     uploaded_kml = st.file_uploader("Archivo KML (Polígonos)", type=['kml', 'xml'])
     
     st.markdown("---")
-    st.info("v3.0.1 (Fix Donut) | SOLEX Secure © 2025")
+    st.info("v3.0.2 (Fix StatsModels) | SOLEX Secure © 2025")
 
 # ==============================================================================
 # 4. LÓGICA PRINCIPAL (MAIN LOOP)
@@ -316,7 +316,7 @@ if df_raw is not None:
         with col_d2:
             st.subheader("Resumen Fitosanitario")
             if 'Estado_Salud' in df.columns:
-                # CORRECCIÓN AQUÍ: px.pie en lugar de px.donut
+                # CORREGIDO: Pie Chart en lugar de Donut que no existía
                 fig_don = px.pie(
                     df, names='Estado_Salud', hole=0.6,
                     color_discrete_sequence=['#4caf50', '#cddc39', '#ff9800', '#f44336', '#9e9e9e']
@@ -414,14 +414,26 @@ if df_raw is not None:
             col_b1, col_b2 = st.columns([2, 1])
             
             with col_b1:
-                # Scatter Plot con Tendencia
+                # --- FIX CRÍTICO: VERIFICACIÓN DE LIBRERÍA STATSMODELS ---
+                # Evita que la app se rompa si falta la librería de tendencias
+                trend_mode = None
+                try:
+                    import statsmodels
+                    trend_mode = "ols"
+                except ImportError:
+                    trend_mode = None
+                    if 'warned_stats' not in st.session_state:
+                        st.toast("Falta librería 'statsmodels'. Línea de tendencia desactivada.", icon="⚠️")
+                        st.session_state['warned_stats'] = True
+
+                # Scatter Plot con Tendencia (Condicional)
                 st.markdown("#### Correlación Altura vs Diámetro")
                 fig_scatter = px.scatter(
                     df, x='Diametro_cm', y='Altura_cm',
                     color='Tipo' if 'Tipo' in df.columns else None,
                     size='Altura_cm',
                     hover_data=df.columns,
-                    trendline="ols", # Línea de tendencia automática
+                    trendline=trend_mode, # Usamos la variable segura
                     title="Modelo de Crecimiento Alométrico"
                 )
                 st.plotly_chart(fig_scatter, use_container_width=True)
