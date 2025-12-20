@@ -4,233 +4,243 @@ import plotly.express as px
 import folium
 from streamlit_folium import st_folium
 import xml.etree.ElementTree as ET
-import os
 from io import BytesIO
 
-# --- CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(page_title="Suite Cerrito del Carmen", layout="wide", page_icon="🌲")
+# --- 1. CONFIGURACIÓN DE PÁGINA Y ESTILOS MÓVILES ---
+st.set_page_config(page_title="Monitor Cerrito del Carmen", layout="wide", page_icon="🌲")
 
-# Estilos CSS (Look Ejecutivo)
+# CSS para asegurar visibilidad en celulares (Fondo Blanco / Texto Oscuro)
 st.markdown("""
     <style>
-    .main {background-color: #f4f6f9;}
-    h1 {color: #1e3a8a;}
-    .stMetric {background-color: white; padding: 10px; border-radius: 8px; border-left: 5px solid #1e3a8a;}
+    /* Forzar fondo blanco y texto oscuro para evitar problemas de Modo Oscuro en cel */
+    [data-testid="stAppViewContainer"] {
+        background-color: #ffffff;
+    }
+    [data-testid="stHeader"] {
+        background-color: rgba(255, 255, 255, 0.95);
+    }
+    /* Texto general en gris muy oscuro */
+    h1, h2, h3, h4, h5, h6, p, li, span, div, label {
+        color: #0f172a !important; 
+    }
+    /* Excepción: Textos dentro de métricas y botones */
+    div[data-testid="stMetricValue"] {
+        color: #1e3a8a !important; /* Azul Corporativo */
+    }
+    div[data-testid="stMetricLabel"] {
+        color: #475569 !important; /* Gris medio */
+    }
+    /* Ajuste para las pestañas */
+    button[data-baseweb="tab"] {
+        color: #0f172a !important;
+    }
     </style>
     """, unsafe_allow_html=True)
 
-st.title("🌲 Dashboard de Reforestación Cerrito del Carmen : por Gemini y M Pons")
+st.title("🌲 Dashboard Cerrito del Carmen")
+st.markdown("**SOLEX Secure - Proyecto de Reforestación**")
 
-# --- VARIABLES Y ESTADO ---
-DEFAULT_EXCEL = "plantacion.xlsx"
-DEFAULT_KML = "cerritodelcarmen.kml.txt"
-if 'nuevos_registros' not in st.session_state: st.session_state.nuevos_registros = []
-
-# --- FUNCIÓN: GENERADOR DE GRÁFICAS (REUTILIZABLE) ---
-def render_grafico_dinamico(df_in, key_suffix, titulo_seccion="📊 Análisis a Medida"):
-    """Crea un widget de gráficas que se puede poner en cualquier pestaña"""
-    with st.expander(titulo_seccion, expanded=True):
-        c1, c2, c3, c4 = st.columns(4)
-        cols = list(df_in.columns)
+# --- 2. FUNCIONES DE CARGA Y LIMPIEZA ---
+@st.cache_data
+def load_data(uploaded_file):
+    try:
+        # Detectar si es CSV o Excel
+        if uploaded_file.name.endswith('.csv'):
+            df = pd.read_csv(uploaded_file)
+        else:
+            df = pd.read_excel(uploaded_file)
         
-        # Selectores únicos para cada sección (usando key_suffix)
-        eje_x = c1.selectbox("Eje X", cols, index=0, key=f"x_{key_suffix}")
-        eje_y = c2.selectbox("Eje Y (Opcional)", ["Conteo (Automático)"] + cols, key=f"y_{key_suffix}")
-        color_g = c3.selectbox("Agrupar por Color", ["Ninguno"] + cols, index=min(len(cols)-1, 2), key=f"c_{key_suffix}")
-        tipo_g = c4.selectbox("Tipo de Gráfico", ["Barras", "Pastel", "Línea", "Dispersión", "Caja"], key=f"t_{key_suffix}")
+        # LIMPIEZA CRÍTICA DE COLUMNAS (Basado en tu archivo real)
+        # Elimina comas y puntos al final de los nombres (ej: "Coordenada_X," -> "Coordenada_X")
+        df.columns = df.columns.str.strip().str.replace('[,.:]', '', regex=True)
         
-        # Lógica de Graficado
-        try:
-            if eje_y == "Conteo (Automático)":
-                # Graficar conteos
-                df_count = df_in[eje_x].value_counts().reset_index()
-                df_count.columns = [eje_x, 'Cantidad']
-                if tipo_g == "Pastel":
-                    fig = px.pie(df_in, names=eje_x, title=f"Distribución de {eje_x}")
-                else:
-                    color_arg = color_g if color_g != "Ninguno" else None # No se puede agrupar conteos simples fácilmente por color extra, simplificamos
-                    fig = px.bar(df_count, x=eje_x, y='Cantidad', text='Cantidad', title=f"Total por {eje_x}")
-            else:
-                # Graficar Columna vs Columna
-                color_arg = color_g if color_g != "Ninguno" else None
-                if tipo_g == "Barras": fig = px.bar(df_in, x=eje_x, y=eje_y, color=color_arg)
-                elif tipo_g == "Línea": fig = px.line(df_in, x=eje_x, y=eje_y, color=color_arg)
-                elif tipo_g == "Dispersión": fig = px.scatter(df_in, x=eje_x, y=eje_y, color=color_arg)
-                elif tipo_g == "Caja": fig = px.box(df_in, x=eje_x, y=eje_y, color=color_arg)
-                else: fig = px.bar(df_in, x=eje_x, y=eje_y) # Fallback
-            
-            st.plotly_chart(fig, use_container_width=True)
-        except Exception as e:
-            st.warning(f"No se pudo generar el gráfico con esa combinación: {e}")
+        # Asegurar tipos de datos numéricos para coordenadas y medidas
+        cols_num = ['Coordenada_X', 'Coordenada_Y', 'Altura_cm', 'Diametro_cm']
+        for col in cols_num:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+                
+        return df
+    except Exception as e:
+        st.error(f"Error procesando archivo: {e}")
+        return None
 
-# --- FUNCIÓN KML ---
 def leer_kml(archivo_kml):
+    """Lee el archivo KML de zonas"""
     zonas = []
     try:
-        tree = ET.parse(archivo_kml)
-        root = tree.getroot()
+        string_data = archivo_kml.getvalue().decode("utf-8")
+        root = ET.fromstring(string_data)
+        # Namespace usual de KML
         ns = {'kml': 'http://www.opengis.net/kml/2.2'}
-        for pm in root.findall('.//kml:Placemark', ns):
-            nombre = pm.find('kml:name', ns)
-            nombre_txt = nombre.text if nombre is not None else "Zona"
-            polygon = pm.find('.//kml:Polygon//kml:coordinates', ns)
-            if polygon is not None and polygon.text:
-                coords_raw = polygon.text.strip().split()
+        # Buscar Placemarks (si no tiene namespace, intenta búsqueda genérica)
+        placemarks = root.findall('.//kml:Placemark', ns)
+        if not placemarks: 
+            placemarks = root.findall('.//{http://www.opengis.net/kml/2.2}Placemark')
+
+        for pm in placemarks:
+            nombre = pm.find('.//{http://www.opengis.net/kml/2.2}name')
+            nombre_txt = nombre.text if nombre is not None else "Zona Desconocida"
+            
+            coords = pm.find('.//{http://www.opengis.net/kml/2.2}coordinates')
+            if coords is not None and coords.text:
+                coords_raw = coords.text.strip().split()
                 puntos = []
                 for c in coords_raw:
-                    partes = c.split(',')
-                    if len(partes) >= 2:
-                        puntos.append([float(partes[1]), float(partes[0])])
+                    val = c.split(',')
+                    if len(val) >= 2:
+                        # KML suele ser Lon, Lat -> Folium quiere Lat, Lon
+                        puntos.append([float(val[1]), float(val[0])])
                 zonas.append({'nombre': nombre_txt, 'puntos': puntos})
-    except Exception: pass
+    except Exception as e:
+        st.warning(f"No se pudo procesar estructura KML completa: {e}")
     return zonas
 
-# --- BARRA LATERAL ---
+# --- 3. BARRA LATERAL ---
 with st.sidebar:
-    st.header("🎛️ Operaciones")
-    uploaded_file = st.file_uploader("Datos (Excel)", type=["csv", "xlsx"])
-    kml_file_upload = st.file_uploader("Mapa (KML)", type=["kml", "xml", "txt"])
+    st.image("https://cdn-icons-png.flaticon.com/512/1598/1598196.png", width=80)
+    st.header("Carga de Datos")
     
-    with st.expander("➕ Registro Rápido"):
-        with st.form("alta"):
-            nid = st.text_input("ID")
-            ntipo = st.selectbox("Tipo", ["Maguey", "Agave", "Mezquite", "Nopal"])
-            npol = st.selectbox("Zona", ["Martín Pons", "Leonor Pons", "Juan Manuel Pons", "Ruinas"])
-            c1, c2 = st.columns(2)
-            nlat = c1.number_input("Lat", 21.23, format="%.4f")
-            nlon = c2.number_input("Lon", -100.46, format="%.4f")
-            nsalud = st.selectbox("Salud", ["Excelente", "Regular", "Crítico"])
-            if st.form_submit_button("Guardar"):
-                st.session_state.nuevos_registros.append({
-                    'ID_Especimen': nid, 'Tipo': ntipo, 'Poligono': npol,
-                    'Coordenada_X': nlat, 'Coordenada_Y': nlon, 'Estado_Salud': nsalud
-                })
-                st.success("Guardado")
+    file_excel = st.file_uploader("📂 Subir Excel/CSV Plantación", type=["xlsx", "csv"])
+    file_kml = st.file_uploader("🗺️ Subir Mapa (KML)", type=["kml", "txt", "xml"])
+    
+    st.divider()
+    st.info("Sistema optimizado para visualización móvil.")
 
-# --- CARGA DE DATOS ---
-target_excel = uploaded_file if uploaded_file else (DEFAULT_EXCEL if os.path.exists(DEFAULT_EXCEL) else None)
-target_kml = kml_file_upload if kml_file_upload else (DEFAULT_KML if os.path.exists(DEFAULT_KML) else None)
-
-if target_excel:
-    try:
-        # Lectura
-        if hasattr(target_excel, 'name') and target_excel.name.endswith('.csv'): df = pd.read_csv(target_excel)
-        elif isinstance(target_excel, str) and target_excel.endswith('.csv'): df = pd.read_csv(target_excel)
-        else: df = pd.read_excel(target_excel)
+# --- 4. LÓGICA PRINCIPAL ---
+if file_excel:
+    df = load_data(file_excel)
+    
+    if df is not None:
+        # --- PESTAÑAS ---
+        tab1, tab2, tab3 = st.tabs(["📊 Resumen Ejecutivo", "🗺️ Mapa Georreferenciado", "📈 Análisis Detallado"])
         
-        df.columns = df.columns.str.strip().str.replace('[,.]', '', regex=True)
-        if st.session_state.nuevos_registros:
-            df = pd.concat([df, pd.DataFrame(st.session_state.nuevos_registros)], ignore_index=True)
-        
-        df_mapa = df.dropna(subset=['Coordenada_X', 'Coordenada_Y'])
+        # === TAB 1: RESUMEN ===
+        with tab1:
+            st.subheader("Estado Actual de la Plantación")
+            
+            # KPIS
+            col1, col2, col3, col4 = st.columns(4)
+            total = len(df)
+            saludables = len(df[df['Estado_Salud'].astype(str).str.contains('Excelente|Bueno', case=False, na=False)])
+            magueyes = len(df[df['Tipo'].astype(str).str.upper() == 'MAGUEY'])
+            
+            col1.metric("Total Especímenes", total)
+            col2.metric("Salud Excelente", saludables, delta=f"{saludables/total*100:.1f}%")
+            col3.metric("Magueyes", magueyes)
+            
+            # Altura Promedio (si existe la columna)
+            if 'Altura_cm' in df.columns:
+                avg_alt = df['Altura_cm'].mean()
+                col4.metric("Altura Promedio", f"{avg_alt:.1f} cm")
+            else:
+                col4.metric("Zonas", df['Poligono'].nunique())
 
-        # Botón Descarga
-        with st.sidebar:
             st.divider()
+
+            # GRÁFICOS RESUMEN
+            c_chart1, c_chart2 = st.columns(2)
+            
+            with c_chart1:
+                # Conteo por Polígono (Basado en tu columna 'Poligono')
+                if 'Poligono' in df.columns:
+                    conteo_zona = df['Poligono'].value_counts().reset_index()
+                    conteo_zona.columns = ['Zona', 'Cantidad']
+                    fig_bar = px.bar(conteo_zona, x='Zona', y='Cantidad', color='Zona', 
+                                     title="Distribución por Polígono", text='Cantidad')
+                    st.plotly_chart(fig_bar, use_container_width=True)
+            
+            with c_chart2:
+                # Estado de Salud
+                if 'Estado_Salud' in df.columns:
+                    fig_pie = px.pie(df, names='Estado_Salud', title="Estado de Salud General",
+                                     color_discrete_sequence=px.colors.sequential.Teal)
+                    st.plotly_chart(fig_pie, use_container_width=True)
+
+        # === TAB 2: MAPA ===
+        with tab2:
+            st.subheader("Ubicación de Especímenes")
+            
+            # Validar coordenadas
+            if 'Coordenada_X' in df.columns and 'Coordenada_Y' in df.columns:
+                # Centro del mapa (Usando el primer punto válido o el promedio)
+                lat_center = df['Coordenada_X'].mean()
+                lon_center = df['Coordenada_Y'].mean()
+                
+                m = folium.Map(location=[lat_center, lon_center], zoom_start=17, tiles="OpenStreetMap")
+                
+                # Capa KML (Polígonos)
+                if file_kml:
+                    zonas = leer_kml(file_kml)
+                    colores_zonas = ['#3388ff', '#ff33bb', '#33ff57', '#ff9933']
+                    for i, z in enumerate(zonas):
+                        color = colores_zonas[i % len(colores_zonas)]
+                        folium.Polygon(
+                            locations=z['puntos'], 
+                            color=color, fill=True, fill_opacity=0.2, 
+                            popup=f"Zona: {z['nombre']}"
+                        ).add_to(m)
+
+                # Capa Puntos (Árboles)
+                for _, row in df.iterrows():
+                    # Validar que no sean NaN
+                    if pd.notnull(row['Coordenada_X']) and pd.notnull(row['Coordenada_Y']):
+                        # Color por salud
+                        color_pt = 'green'
+                        estado = str(row.get('Estado_Salud', '')).lower()
+                        if 'crítico' in estado or 'muerto' in estado: color_pt = 'red'
+                        elif 'regular' in estado: color_pt = 'orange'
+                        
+                        tooltip_txt = f"{row.get('ID_Especimen', 'ID?')} - {row.get('Tipo', '')}"
+                        
+                        folium.CircleMarker(
+                            location=[row['Coordenada_X'], row['Coordenada_Y']], # Tu CSV tiene X=Lat, Y=Lon
+                            radius=4,
+                            color=color_pt,
+                            fill=True,
+                            fill_opacity=0.8,
+                            tooltip=tooltip_txt
+                        ).add_to(m)
+                
+                st_folium(m, width="100%", height=500)
+                
+                st.caption("Verde: Excelente/Bueno | Naranja: Regular | Rojo: Crítico")
+            else:
+                st.warning("No se encontraron columnas de coordenadas válidas (Coordenada_X, Coordenada_Y).")
+
+        # === TAB 3: ANÁLISIS ===
+        with tab3:
+            st.subheader("Análisis de Crecimiento y Especies")
+            
+            # Scatter Plot: Altura vs Diametro (Si existen las columnas del nuevo Excel)
+            if 'Altura_cm' in df.columns and 'Diametro_cm' in df.columns:
+                st.markdown("##### Correlación: Altura vs Diámetro")
+                # Filtramos nulos para que la gráfica no falle
+                df_clean = df.dropna(subset=['Altura_cm', 'Diametro_cm'])
+                
+                if not df_clean.empty:
+                    fig_scatter = px.scatter(
+                        df_clean, 
+                        x='Diametro_cm', 
+                        y='Altura_cm', 
+                        color='Tipo', 
+                        size='Altura_cm',
+                        hover_data=['ID_Especimen', 'Poligono'],
+                        title="Relación de Crecimiento (Tamaño = Altura)"
+                    )
+                    st.plotly_chart(fig_scatter, use_container_width=True)
+                else:
+                    st.info("Faltan datos de altura/diámetro para generar la gráfica.")
+            
+            st.markdown("##### Base de Datos Bruta")
+            st.dataframe(df, use_container_width=True)
+
+            # Botón de descarga corregido
             output = BytesIO()
             with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
                 df.to_excel(writer, index=False)
-            st.download_button("💾 Bajar Excel", data=output.getvalue(), file_name="plantacion_v9.xlsx")
+            st.download_button("💾 Descargar Excel Procesado", data=output.getvalue(), file_name="Cerrito_Data_Procesada.xlsx")
 
-        # ==============================================================================
-        # ESTRUCTURA PRINCIPAL (4 PESTAÑAS)
-        # ==============================================================================
-        tab1, tab2, tab3, tab4 = st.tabs(["📊 Dashboard General", "🗺️ Mapa Exclusivo", "💰 Finanzas (ROI)", "📋 Base de Datos"])
-
-        # --- TAB 1: DASHBOARD ---
-        with tab1:
-            st.subheader("Resumen Ejecutivo")
-            # KPIs Fijos (Siempre útiles)
-            k1, k2, k3, k4 = st.columns(4)
-            k1.metric("Plantas Totales", len(df))
-            k2.metric("Magueyes", len(df[df['Tipo']=='Maguey']))
-            k3.metric("En Riesgo", len(df[df['Estado_Salud']=='Crítico']), delta_color="inverse")
-            k4.metric("Zonas Activas", df['Poligono'].nunique())
-            
-            st.divider()
-            # ¡AQUÍ ESTÁ TU GRÁFICA PERSONALIZABLE 1!
-            st.markdown("#### 🛠️ Tu Análisis Dinámico")
-            render_grafico_dinamico(df, "dash_main", "Diseña tu gráfica principal")
-
-        # --- TAB 2: MAPA ---
-        with tab2:
-            col_map, col_stats = st.columns([3, 1])
-            with col_map:
-                m = folium.Map(location=[21.2374, -100.4639], zoom_start=18, tiles="OpenStreetMap")
-                if target_kml:
-                    zonas = leer_kml(target_kml)
-                    colores = {'Martín Pons': '#3388ff', 'Leonor Pons Gutiérrez': '#ff33bb', 'Juan Manuel Pons': '#33ff57'}
-                    for z in zonas:
-                        c = colores.get(z['nombre'], '#ff9933')
-                        folium.Polygon(locations=z['puntos'], color=c, weight=2, fill=True, fill_opacity=0.1, popup=z['nombre']).add_to(m)
-                for _, row in df_mapa.iterrows():
-                    color = 'red' if row['Estado_Salud'] == 'Crítico' else 'green'
-                    folium.CircleMarker([row['Coordenada_X'], row['Coordenada_Y']], radius=5, color=color, fill=True, popup=row['Tipo']).add_to(m)
-                st_folium(m, width=1000, height=600)
-            
-            with col_stats:
-                st.info("Estadísticas Geográficas")
-                # ¡AQUÍ ESTÁ TU GRÁFICA PERSONALIZABLE 2!
-                st.write("Analiza la distribución del mapa:")
-                render_grafico_dinamico(df_mapa, "map_stats", "Graficar Mapa")
-
-        # --- TAB 3: FINANZAS (REGRESO) ---
-        with tab3:
-            st.header("💰 Proyección Financiera y ROI")
-            st.markdown("Simulador de negocio para Maguey/Agave.")
-            
-            # 1. Inputs Financieros
-            with st.expander("1. Configuración de Costos y Precios", expanded=True):
-                c1, c2, c3 = st.columns(3)
-                inv_inicial = c1.number_input("Costo Plantación ($/planta)", 50.0, step=5.0)
-                mant_anual = c2.number_input("Mantenimiento Anual ($/planta)", 20.0, step=5.0)
-                anos = c3.slider("Años a Cosecha", 5, 12, 7)
-                
-                c4, c5 = st.columns(2)
-                precio_venta = c4.number_input("Precio Venta Final ($/piña)", 800.0, step=50.0)
-                merma = c5.slider("% Riesgo / Merma", 0, 30, 10) / 100
-
-            # 2. Cálculos
-            num_plantas = len(df[df['Tipo'].isin(['Maguey', 'Agave'])])
-            if num_plantas == 0: num_plantas = len(df) # Fallback si no hay tipo definido
-            
-            costo_total = (inv_inicial + (mant_anual * anos)) * num_plantas
-            plantas_finales = num_plantas * (1 - merma)
-            ingreso_total = plantas_finales * precio_venta
-            utilidad = ingreso_total - costo_total
-            roi = (utilidad / costo_total) * 100 if costo_total > 0 else 0
-            
-            # 3. Resultados Visuales
-            st.divider()
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Inversión Total Estimada", f"${costo_total:,.2f}", delta="Costo")
-            m2.metric("Venta Proyectada", f"${ingreso_total:,.2f}", delta="Ingreso")
-            m3.metric("Utilidad Neta", f"${utilidad:,.2f}", delta=f"ROI: {roi:.1f}%")
-            
-            # 4. Gráfica Financiera
-            st.markdown("#### 📈 Proyección de Flujo de Efectivo")
-            # Creamos datos simulados para la gráfica financiera
-            datos_fin = pd.DataFrame({
-                'Concepto': ['Inversión', 'Ventas', 'Utilidad'],
-                'Monto': [costo_total, ingreso_total, utilidad],
-                'Tipo': ['Salida', 'Entrada', 'Resultado']
-            })
-            # ¡AQUÍ ESTÁ TU GRÁFICA PERSONALIZABLE 3! (Pre-cargada con finanzas)
-            fig_fin = px.bar(datos_fin, x='Concepto', y='Monto', color='Tipo', text='Monto', title="Balance Financiero")
-            st.plotly_chart(fig_fin, use_container_width=True)
-            
-            st.write("¿Quieres analizar otra variable financiera?")
-            render_grafico_dinamico(df, "fin_stats", "Crear gráfica extra")
-
-        # --- TAB 4: BASE DE DATOS ---
-        with tab4:
-            st.subheader("Base de Datos Maestra")
-            # ¡AQUÍ ESTÁ TU GRÁFICA PERSONALIZABLE 4!
-            render_grafico_dinamico(df, "data_explore", "Analizar Base de Datos")
-            st.divider()
-            st.dataframe(df, use_container_width=True)
-
-    except Exception as e:
-        st.error(f"Error cargando: {e}")
 else:
-    st.info("Sube tu archivo para comenzar.")
+    # Pantalla de bienvenida si no hay archivo
+    st.info("👋 Hola Pons. Por favor sube el archivo 'plantacion.xlsx' en la barra lateral para iniciar.")
