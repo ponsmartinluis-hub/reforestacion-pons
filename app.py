@@ -22,14 +22,19 @@ st.title("🌵 Dashboard Estratégico: Martín Pons y Hermanos")
 DEFAULT_EXCEL = "plantacion.xlsx"
 DEFAULT_KML = "cerritodelcarmen.kml.txt"
 
-# --- BARRA LATERAL ---
+# --- BARRA LATERAL (CONFIGURACIÓN) ---
 with st.sidebar:
-    st.header("⚙️ Panel de Control")
-    st.info("Sube tus archivos para actualizar el tablero.")
-    uploaded_file = st.file_uploader("Base de Datos (Excel)", type=["csv", "xlsx"])
+    st.header("⚙️ Centro de Carga")
+    
+    # 1. CARGA DE ARCHIVOS
+    uploaded_file = st.file_uploader("Base de Datos (Excel/CSV)", type=["csv", "xlsx"])
     kml_file_upload = st.file_uploader("Mapa Digital (KML)", type=["kml", "xml", "txt"])
+    
+    st.divider()
+    st.subheader("🔧 Mapeo de Columnas")
+    st.info("Si cambias los nombres en el Excel, ajústalos aquí:")
 
-# --- CARGA INTELIGENTE ---
+# --- LÓGICA DE CARGA INICIAL ---
 target_excel = uploaded_file if uploaded_file else (DEFAULT_EXCEL if os.path.exists(DEFAULT_EXCEL) else None)
 target_kml = kml_file_upload if kml_file_upload else (DEFAULT_KML if os.path.exists(DEFAULT_KML) else None)
 
@@ -55,92 +60,82 @@ def leer_kml(archivo_kml):
     except Exception: pass
     return zonas
 
-# --- PROGRAMA PRINCIPAL ---
+# --- PROCESAMIENTO INTELIGENTE ---
 if target_excel:
     try:
-        # Lectura y Limpieza
+        # A) LEER EL ARCHIVO ORIGINAL (SIN TOCAR)
         if hasattr(target_excel, 'name') and target_excel.name.endswith('.csv'):
-             df = pd.read_csv(target_excel)
+             df_raw = pd.read_csv(target_excel)
         elif isinstance(target_excel, str) and target_excel.endswith('.csv'):
-             df = pd.read_csv(target_excel)
+             df_raw = pd.read_csv(target_excel)
         else:
-             df = pd.read_excel(target_excel)
+             df_raw = pd.read_excel(target_excel)
         
-        df.columns = df.columns.str.strip().str.replace('[,.]', '', regex=True)
+        # Limpieza básica de nombres (quitar espacios extra)
+        df_raw.columns = df_raw.columns.str.strip()
+
+        # B) SELECTORES DE MAPEO (EN LA BARRA LATERAL)
+        # Esto permite al usuario decirnos qué columna es cuál
+        with st.sidebar:
+            # Función para intentar adivinar la columna correcta
+            def encontrar_col(opciones, busqueda):
+                for col in opciones:
+                    if busqueda.lower() in col.lower():
+                        return col
+                return opciones[0] # Si no encuentra, devuelve la primera
+
+            col_lat = st.selectbox("Columna Latitud (Y)", df_raw.columns, index=df_raw.columns.get_loc(encontrar_col(df_raw.columns, "Coordenada_X")))
+            col_lon = st.selectbox("Columna Longitud (X)", df_raw.columns, index=df_raw.columns.get_loc(encontrar_col(df_raw.columns, "Coordenada_Y")))
+            col_tipo = st.selectbox("Columna Tipo Planta", df_raw.columns, index=df_raw.columns.get_loc(encontrar_col(df_raw.columns, "Tipo")))
+            col_salud = st.selectbox("Columna Salud", df_raw.columns, index=df_raw.columns.get_loc(encontrar_col(df_raw.columns, "Salud")))
+            col_id = st.selectbox("Columna ID / Nombre", df_raw.columns, index=df_raw.columns.get_loc(encontrar_col(df_raw.columns, "ID")))
+
+        # C) CREAR DATAFRAME ESTANDARIZADO (RENOMBRAR INTERNAMENTE)
+        df = df_raw.copy()
+        df.rename(columns={
+            col_lat: 'Coordenada_X', # Nota: Usaste X para Lat en tu excel, mantenemos tu lógica
+            col_lon: 'Coordenada_Y',
+            col_tipo: 'Tipo',
+            col_salud: 'Estado_Salud',
+            col_id: 'ID_Especimen'
+        }, inplace=True)
+
         df_mapa = df.dropna(subset=['Coordenada_X', 'Coordenada_Y'])
 
-        # --- PESTAÑAS ---
-        tab1, tab2, tab3 = st.tabs(["📊 Análisis Detallado (Gráficas)", "🗺️ Mapa General", "💰 Plan de Negocio"])
+        # --- PESTAÑAS DEL DASHBOARD ---
+        tab1, tab2, tab3 = st.tabs(["📊 Análisis Flexible", "🗺️ Mapa Geo-Estratégico", "💰 Negocio"])
 
-        # ==============================================================================
-        # TAB 1: ANÁLISIS DETALLADO (LO QUE PEDISTE)
-        # ==============================================================================
+        # TAB 1: ANÁLISIS
         with tab1:
-            st.subheader("🔍 Explorador de Datos por Columna")
+            st.subheader("🔍 Analizador de Datos")
+            columnas_excluidas = ['Coordenada_X', 'Coordenada_Y', 'ID_Especimen', 'Tipo', 'Estado_Salud']
+            # Permitimos analizar las columnas ORIGINALES que sobraron
+            cols_extra = [c for c in df.columns if c not in columnas_excluidas]
             
-            # 1. SELECTOR DE COLUMNA
-            columnas_disponibles = [c for c in df.columns if c not in ['Coordenada_X', 'Coordenada_Y', 'ID_Especimen']]
-            columna_seleccionada = st.selectbox("Selecciona qué columna quieres analizar:", columnas_disponibles, index=0)
-            
-            # 2. ANÁLISIS AUTOMÁTICO
-            col_izq, col_der = st.columns([2, 1])
-            
-            with col_izq:
-                # Si es TEXTO (Categorías: Tipo, Salud, Polígono)
-                if df[columna_seleccionada].dtype == 'object':
-                    st.markdown(f"### Distribución de: {columna_seleccionada}")
-                    conteo = df[columna_seleccionada].value_counts().reset_index()
-                    conteo.columns = ['Categoría', 'Total']
-                    
-                    # Gráfica de Barras con Totales
-                    fig_bar = px.bar(conteo, x='Categoría', y='Total', text='Total', color='Categoría', 
-                                     title=f"Totales por {columna_seleccionada}")
-                    st.plotly_chart(fig_bar, use_container_width=True)
-                    
-                # Si es NÚMERO (Altura, Diámetro)
-                else:
-                    st.markdown(f"### Estadísticas de: {columna_seleccionada}")
-                    fig_hist = px.histogram(df, x=columna_seleccionada, nbins=20, text_auto=True, 
-                                            title=f"Distribución de {columna_seleccionada}")
-                    st.plotly_chart(fig_hist, use_container_width=True)
-
-            with col_der:
-                # Gráfica de Pastel (Solo para texto) o Caja (para números)
-                if df[columna_seleccionada].dtype == 'object':
-                    fig_pie = px.pie(df, names=columna_seleccionada, title=f"% Porcentaje")
-                    st.plotly_chart(fig_pie, use_container_width=True)
-                    
-                    # Tabla resumen pequeña
-                    st.write("Resumen Numérico:")
-                    st.dataframe(df[columna_seleccionada].value_counts(), use_container_width=True)
-                else:
-                    fig_box = px.box(df, y=columna_seleccionada, points="all", title="Rangos (Máx/Mín)")
-                    st.plotly_chart(fig_box, use_container_width=True)
-                    
-                    st.metric("Promedio", f"{df[columna_seleccionada].mean():.2f}")
-                    st.metric("Máximo", f"{df[columna_seleccionada].max():.2f}")
-
-            # 3. VISUALIZADOR DE EXCEL (SIEMPRE VISIBLE ABAJO)
-            st.divider()
-            st.subheader(f"📋 Base de Datos Filtrada: {columna_seleccionada}")
-            st.caption("Aquí puedes ver los datos crudos que generan las gráficas de arriba.")
-            
-            # Permitir filtrar la tabla visualmente
-            filtro_valor = st.multiselect(f"Filtrar tabla por valores de '{columna_seleccionada}' (Opcional):", df[columna_seleccionada].unique())
-            
-            if filtro_valor:
-                df_visible = df[df[columna_seleccionada].isin(filtro_valor)]
-            else:
-                df_visible = df
+            if cols_extra:
+                col_elegida = st.selectbox("Analizar Variable Extra:", cols_extra)
                 
-            st.dataframe(df_visible, use_container_width=True)
+                c1, c2 = st.columns([2,1])
+                with c1:
+                    if df[col_elegida].dtype == 'object':
+                        conteo = df[col_elegida].value_counts().reset_index()
+                        conteo.columns = ['Dato', 'Total']
+                        st.plotly_chart(px.bar(conteo, x='Dato', y='Total', color='Dato', title=f"Totales por {col_elegida}"), use_container_width=True)
+                    else:
+                        st.plotly_chart(px.histogram(df, x=col_elegida, title=f"Distribución de {col_elegida}"), use_container_width=True)
+                with c2:
+                    st.write("Datos filtrados:")
+                    st.dataframe(df[[col_elegida, 'ID_Especimen']].head(10), use_container_width=True)
+            else:
+                st.info("Tu Excel solo tiene las columnas básicas. Agrega más columnas (ej. Altura, Dueño) para ver análisis aquí.")
+            
+            st.divider()
+            st.caption("Vista completa de la Base de Datos:")
+            st.dataframe(df)
 
-
-        # ==============================================================================
-        # TAB 2: MAPA (SIMPLIFICADO)
-        # ==============================================================================
+        # TAB 2: MAPA
         with tab2:
-            st.metric("Total Georreferenciado", f"{len(df_mapa)} plantas")
+            st.metric("Puntos Activos", len(df_mapa))
             m = folium.Map(location=[21.2374, -100.4639], zoom_start=18)
 
             if target_kml:
@@ -151,29 +146,28 @@ if target_excel:
                     folium.Polygon(locations=z['puntos'], color=c, weight=2, fill=True, fill_opacity=0.1, popup=z['nombre']).add_to(m)
 
             for _, row in df_mapa.iterrows():
-                color = 'green' if row['Estado_Salud'] == 'Excelente' else 'red'
+                # Lógica de color segura
+                color = 'green'
+                if str(row['Estado_Salud']).lower() in ['crítico', 'critico', 'malo']: color = 'red'
+                elif str(row['Estado_Salud']).lower() in ['regular', 'medio']: color = 'orange'
+                
                 folium.CircleMarker(
-                    [row['Coordenada_X'], row['Coordenada_Y']], radius=4, color=color, fill=True, fill_opacity=0.8,
-                    popup=f"{row['Tipo']} ({row['ID_Especimen']})"
+                    [row['Coordenada_X'], row['Coordenada_Y']], radius=5, color=color, fill=True, fill_opacity=0.8,
+                    popup=f"ID: {row['ID_Especimen']}\n{row['Tipo']}"
                 ).add_to(m)
             
             st_folium(m, width=1200, height=500)
 
-        # ==============================================================================
-        # TAB 3: NEGOCIO (IGUAL QUE ANTES)
-        # ==============================================================================
+        # TAB 3: NEGOCIO
         with tab3:
-            st.header("💰 Proyección Financiera")
-            c1, c2 = st.columns(2)
-            with c1:
-                plantas = st.number_input("Total Plantas Maguey", value=len(df[df['Tipo']=='Maguey']))
-                precio = st.number_input("Precio Venta Estimado ($)", value=800)
-            with c2:
-                venta_total = plantas * precio
-                st.metric("Venta Potencial Total", f"${venta_total:,.2f}")
-                st.progress(min(100, int(len(df)/10))) # Barra de progreso simulada
+            st.header("Proyección Financiera")
+            st.info("Calculadora de ROI basada en inventario actual.")
+            plantas_activas = len(df)
+            precio = st.slider("Precio por Piña ($)", 500, 1500, 800)
+            st.metric("Valor del Inventario", f"${plantas_activas * precio:,.2f}")
 
     except Exception as e:
-        st.error(f"Error procesando el archivo: {e}")
+        st.error(f"Error de lectura: {e}")
+        st.warning("Consejo: Revisa que hayas seleccionado las columnas correctas en la barra lateral.")
 else:
-    st.info("👋 Carga tus datos para comenzar el análisis.")
+    st.info("Sube un archivo para empezar.")
