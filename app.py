@@ -10,58 +10,57 @@ from io import BytesIO
 # --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="Suite Cerrito del Carmen", layout="wide", page_icon="🌲")
 
-# Estilos CSS (Look Ejecutivo)
+# Estilos CSS (Look Ejecutivo + Ajustes Móviles)
 st.markdown("""
     <style>
     .main {background-color: #f4f6f9;}
     h1 {color: #1e3a8a;}
-    .stMetric {background-color: white; padding: 10px; border-radius: 8px; border-left: 5px solid #1e3a8a;}
+    /* Ajuste para que las métricas no se corten en móvil */
+    [data-testid="stMetricValue"] {
+        font-size: 1.5rem !important;
+    }
+    .stMetric {
+        background-color: white; 
+        padding: 10px; 
+        border-radius: 8px; 
+        border-left: 5px solid #1e3a8a;
+        box-shadow: 1px 1px 3px rgba(0,0,0,0.1);
+    }
     </style>
     """, unsafe_allow_html=True)
 
-st.title("🌲 Dashboard de Reforestación Cerrito del Carmen : por Gemini y M Pons")
+st.title("🌲 Dashboard Cerrito del Carmen: Gemini & M Pons")
 
 # --- VARIABLES Y ESTADO ---
 DEFAULT_EXCEL = "plantacion.xlsx"
 DEFAULT_KML = "cerritodelcarmen.kml.txt"
 if 'nuevos_registros' not in st.session_state: st.session_state.nuevos_registros = []
 
-# --- FUNCIÓN: GENERADOR DE GRÁFICAS (REUTILIZABLE) ---
+# --- FUNCIÓN GRÁFICA ---
 def render_grafico_dinamico(df_in, key_suffix, titulo_seccion="📊 Análisis a Medida"):
-    """Crea un widget de gráficas que se puede poner en cualquier pestaña"""
-    with st.expander(titulo_seccion, expanded=True):
+    with st.expander(titulo_seccion, expanded=False): # Colapsado por defecto en móvil para ahorrar espacio
         c1, c2, c3, c4 = st.columns(4)
         cols = list(df_in.columns)
-        
-        # Selectores únicos para cada sección (usando key_suffix)
         eje_x = c1.selectbox("Eje X", cols, index=0, key=f"x_{key_suffix}")
-        eje_y = c2.selectbox("Eje Y (Opcional)", ["Conteo (Automático)"] + cols, key=f"y_{key_suffix}")
-        color_g = c3.selectbox("Agrupar por Color", ["Ninguno"] + cols, index=min(len(cols)-1, 2), key=f"c_{key_suffix}")
-        tipo_g = c4.selectbox("Tipo de Gráfico", ["Barras", "Pastel", "Línea", "Dispersión", "Caja"], key=f"t_{key_suffix}")
+        eje_y = c2.selectbox("Eje Y", ["Conteo (Automático)"] + cols, key=f"y_{key_suffix}")
+        color_g = c3.selectbox("Color", ["Ninguno"] + cols, index=min(len(cols)-1, 2), key=f"c_{key_suffix}")
+        tipo_g = c4.selectbox("Tipo", ["Barras", "Pastel", "Línea", "Dispersión", "Caja"], key=f"t_{key_suffix}")
         
-        # Lógica de Graficado
         try:
             if eje_y == "Conteo (Automático)":
-                # Graficar conteos
                 df_count = df_in[eje_x].value_counts().reset_index()
                 df_count.columns = [eje_x, 'Cantidad']
-                if tipo_g == "Pastel":
-                    fig = px.pie(df_in, names=eje_x, title=f"Distribución de {eje_x}")
-                else:
-                    color_arg = color_g if color_g != "Ninguno" else None # No se puede agrupar conteos simples fácilmente por color extra, simplificamos
-                    fig = px.bar(df_count, x=eje_x, y='Cantidad', text='Cantidad', title=f"Total por {eje_x}")
+                if tipo_g == "Pastel": fig = px.pie(df_in, names=eje_x, title=f"Distribución de {eje_x}")
+                else: fig = px.bar(df_count, x=eje_x, y='Cantidad', text='Cantidad', title=f"Total por {eje_x}")
             else:
-                # Graficar Columna vs Columna
                 color_arg = color_g if color_g != "Ninguno" else None
                 if tipo_g == "Barras": fig = px.bar(df_in, x=eje_x, y=eje_y, color=color_arg)
                 elif tipo_g == "Línea": fig = px.line(df_in, x=eje_x, y=eje_y, color=color_arg)
                 elif tipo_g == "Dispersión": fig = px.scatter(df_in, x=eje_x, y=eje_y, color=color_arg)
                 elif tipo_g == "Caja": fig = px.box(df_in, x=eje_x, y=eje_y, color=color_arg)
-                else: fig = px.bar(df_in, x=eje_x, y=eje_y) # Fallback
-            
+                else: fig = px.bar(df_in, x=eje_x, y=eje_y)
             st.plotly_chart(fig, use_container_width=True)
-        except Exception as e:
-            st.warning(f"No se pudo generar el gráfico con esa combinación: {e}")
+        except Exception: st.warning("Combinación no válida para graficar.")
 
 # --- FUNCIÓN KML ---
 def leer_kml(archivo_kml):
@@ -107,130 +106,94 @@ with st.sidebar:
                 })
                 st.success("Guardado")
 
-# --- CARGA DE DATOS ---
+# --- CARGA ---
 target_excel = uploaded_file if uploaded_file else (DEFAULT_EXCEL if os.path.exists(DEFAULT_EXCEL) else None)
 target_kml = kml_file_upload if kml_file_upload else (DEFAULT_KML if os.path.exists(DEFAULT_KML) else None)
 
 if target_excel:
     try:
-        # Lectura
         if hasattr(target_excel, 'name') and target_excel.name.endswith('.csv'): df = pd.read_csv(target_excel)
         elif isinstance(target_excel, str) and target_excel.endswith('.csv'): df = pd.read_csv(target_excel)
         else: df = pd.read_excel(target_excel)
-        
         df.columns = df.columns.str.strip().str.replace('[,.]', '', regex=True)
         if st.session_state.nuevos_registros:
             df = pd.concat([df, pd.DataFrame(st.session_state.nuevos_registros)], ignore_index=True)
-        
         df_mapa = df.dropna(subset=['Coordenada_X', 'Coordenada_Y'])
 
-        # Botón Descarga
         with st.sidebar:
             st.divider()
             output = BytesIO()
-            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                df.to_excel(writer, index=False)
-            st.download_button("💾 Bajar Excel", data=output.getvalue(), file_name="plantacion_v9.xlsx")
+            with pd.ExcelWriter(output, engine='xlsxwriter') as writer: df.to_excel(writer, index=False)
+            st.download_button("💾 Bajar Excel", data=output.getvalue(), file_name="plantacion_v10.xlsx")
 
         # ==============================================================================
-        # ESTRUCTURA PRINCIPAL (4 PESTAÑAS)
+        # ESTRUCTURA PRINCIPAL
         # ==============================================================================
-        tab1, tab2, tab3, tab4 = st.tabs(["📊 Dashboard General", "🗺️ Mapa Exclusivo", "💰 Finanzas (ROI)", "📋 Base de Datos"])
+        tab1, tab2, tab3, tab4 = st.tabs(["📊 Dashboard", "🗺️ Mapa", "💰 Finanzas", "📋 Datos"])
 
-        # --- TAB 1: DASHBOARD ---
+        # --- TAB 1: DASHBOARD (ARREGLADO PARA MÓVIL) ---
         with tab1:
             st.subheader("Resumen Ejecutivo")
-            # KPIs Fijos (Siempre útiles)
-            k1, k2, k3, k4 = st.columns(4)
-            k1.metric("Plantas Totales", len(df))
-            k2.metric("Magueyes", len(df[df['Tipo']=='Maguey']))
-            k3.metric("En Riesgo", len(df[df['Estado_Salud']=='Crítico']), delta_color="inverse")
-            k4.metric("Zonas Activas", df['Poligono'].nunique())
+            
+            # SOLUCIÓN MÓVIL: Usamos 2 columnas en lugar de 4 para que no se aplasten
+            col_kpi1, col_kpi2 = st.columns(2)
+            with col_kpi1:
+                st.metric("Plantas Totales", len(df))
+                st.metric("En Riesgo", len(df[df['Estado_Salud']=='Crítico']), delta_color="inverse")
+            with col_kpi2:
+                st.metric("Magueyes", len(df[df['Tipo']=='Maguey']))
+                st.metric("Zonas Activas", df['Poligono'].nunique())
             
             st.divider()
-            # ¡AQUÍ ESTÁ TU GRÁFICA PERSONALIZABLE 1!
             st.markdown("#### 🛠️ Tu Análisis Dinámico")
             render_grafico_dinamico(df, "dash_main", "Diseña tu gráfica principal")
 
         # --- TAB 2: MAPA ---
         with tab2:
-            col_map, col_stats = st.columns([3, 1])
-            with col_map:
-                m = folium.Map(location=[21.2374, -100.4639], zoom_start=18, tiles="OpenStreetMap")
-                if target_kml:
-                    zonas = leer_kml(target_kml)
-                    colores = {'Martín Pons': '#3388ff', 'Leonor Pons Gutiérrez': '#ff33bb', 'Juan Manuel Pons': '#33ff57'}
-                    for z in zonas:
-                        c = colores.get(z['nombre'], '#ff9933')
-                        folium.Polygon(locations=z['puntos'], color=c, weight=2, fill=True, fill_opacity=0.1, popup=z['nombre']).add_to(m)
-                for _, row in df_mapa.iterrows():
-                    color = 'red' if row['Estado_Salud'] == 'Crítico' else 'green'
-                    folium.CircleMarker([row['Coordenada_X'], row['Coordenada_Y']], radius=5, color=color, fill=True, popup=row['Tipo']).add_to(m)
-                st_folium(m, width=1000, height=600)
+            st.info("Vista Satelital")
+            m = folium.Map(location=[21.2374, -100.4639], zoom_start=18, tiles="OpenStreetMap")
+            if target_kml:
+                zonas = leer_kml(target_kml)
+                colores = {'Martín Pons': '#3388ff', 'Leonor Pons Gutiérrez': '#ff33bb', 'Juan Manuel Pons': '#33ff57'}
+                for z in zonas:
+                    c = colores.get(z['nombre'], '#ff9933')
+                    folium.Polygon(locations=z['puntos'], color=c, weight=2, fill=True, fill_opacity=0.1, popup=z['nombre']).add_to(m)
+            for _, row in df_mapa.iterrows():
+                color = 'red' if row['Estado_Salud'] == 'Crítico' else 'green'
+                folium.CircleMarker([row['Coordenada_X'], row['Coordenada_Y']], radius=5, color=color, fill=True, popup=row['Tipo']).add_to(m)
+            st_folium(m, width=1000, height=500)
             
-            with col_stats:
-                st.info("Estadísticas Geográficas")
-                # ¡AQUÍ ESTÁ TU GRÁFICA PERSONALIZABLE 2!
-                st.write("Analiza la distribución del mapa:")
-                render_grafico_dinamico(df_mapa, "map_stats", "Graficar Mapa")
+            st.write("Estadísticas del Mapa:")
+            render_grafico_dinamico(df_mapa, "map_stats")
 
-        # --- TAB 3: FINANZAS (REGRESO) ---
+        # --- TAB 3: FINANZAS ---
         with tab3:
-            st.header("💰 Proyección Financiera y ROI")
-            st.markdown("Simulador de negocio para Maguey/Agave.")
+            st.header("💰 Proyección Financiera")
+            with st.expander("Configuración de Costos", expanded=True):
+                c1, c2 = st.columns(2)
+                inv_inicial = c1.number_input("Costo Plantación ($)", 50.0)
+                mant_anual = c2.number_input("Mantenimiento Anual ($)", 20.0)
+                anos = st.slider("Años a Cosecha", 5, 12, 7)
+                precio_venta = st.number_input("Precio Venta ($/piña)", 800.0)
             
-            # 1. Inputs Financieros
-            with st.expander("1. Configuración de Costos y Precios", expanded=True):
-                c1, c2, c3 = st.columns(3)
-                inv_inicial = c1.number_input("Costo Plantación ($/planta)", 50.0, step=5.0)
-                mant_anual = c2.number_input("Mantenimiento Anual ($/planta)", 20.0, step=5.0)
-                anos = c3.slider("Años a Cosecha", 5, 12, 7)
-                
-                c4, c5 = st.columns(2)
-                precio_venta = c4.number_input("Precio Venta Final ($/piña)", 800.0, step=50.0)
-                merma = c5.slider("% Riesgo / Merma", 0, 30, 10) / 100
-
-            # 2. Cálculos
-            num_plantas = len(df[df['Tipo'].isin(['Maguey', 'Agave'])])
-            if num_plantas == 0: num_plantas = len(df) # Fallback si no hay tipo definido
-            
+            num_plantas = len(df)
             costo_total = (inv_inicial + (mant_anual * anos)) * num_plantas
-            plantas_finales = num_plantas * (1 - merma)
-            ingreso_total = plantas_finales * precio_venta
+            ingreso_total = num_plantas * precio_venta
             utilidad = ingreso_total - costo_total
-            roi = (utilidad / costo_total) * 100 if costo_total > 0 else 0
             
-            # 3. Resultados Visuales
             st.divider()
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Inversión Total Estimada", f"${costo_total:,.2f}", delta="Costo")
-            m2.metric("Venta Proyectada", f"${ingreso_total:,.2f}", delta="Ingreso")
-            m3.metric("Utilidad Neta", f"${utilidad:,.2f}", delta=f"ROI: {roi:.1f}%")
+            m1, m2 = st.columns(2)
+            m1.metric("Inversión Total", f"${costo_total:,.0f}")
+            m2.metric("Utilidad Neta", f"${utilidad:,.0f}", delta="Ganancia")
             
-            # 4. Gráfica Financiera
-            st.markdown("#### 📈 Proyección de Flujo de Efectivo")
-            # Creamos datos simulados para la gráfica financiera
-            datos_fin = pd.DataFrame({
-                'Concepto': ['Inversión', 'Ventas', 'Utilidad'],
-                'Monto': [costo_total, ingreso_total, utilidad],
-                'Tipo': ['Salida', 'Entrada', 'Resultado']
-            })
-            # ¡AQUÍ ESTÁ TU GRÁFICA PERSONALIZABLE 3! (Pre-cargada con finanzas)
-            fig_fin = px.bar(datos_fin, x='Concepto', y='Monto', color='Tipo', text='Monto', title="Balance Financiero")
-            st.plotly_chart(fig_fin, use_container_width=True)
-            
-            st.write("¿Quieres analizar otra variable financiera?")
-            render_grafico_dinamico(df, "fin_stats", "Crear gráfica extra")
+            datos_fin = pd.DataFrame({'Concepto': ['Inversión', 'Ventas', 'Utilidad'], 'Monto': [costo_total, ingreso_total, utilidad]})
+            st.plotly_chart(px.bar(datos_fin, x='Concepto', y='Monto', color='Concepto', title="Balance"), use_container_width=True)
 
-        # --- TAB 4: BASE DE DATOS ---
+        # --- TAB 4: DATOS ---
         with tab4:
-            st.subheader("Base de Datos Maestra")
-            # ¡AQUÍ ESTÁ TU GRÁFICA PERSONALIZABLE 4!
-            render_grafico_dinamico(df, "data_explore", "Analizar Base de Datos")
-            st.divider()
+            st.subheader("Base de Datos")
+            render_grafico_dinamico(df, "data_explore")
             st.dataframe(df, use_container_width=True)
 
-    except Exception as e:
-        st.error(f"Error cargando: {e}")
-else:
-    st.info("Sube tu archivo para comenzar.")
+    except Exception as e: st.error(f"Error: {e}")
+else: st.info("Sube tu archivo.")
