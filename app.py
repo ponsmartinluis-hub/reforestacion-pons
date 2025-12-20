@@ -1,315 +1,557 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import folium
 from streamlit_folium import st_folium
+from folium.plugins import MarkerCluster, HeatMap
 import xml.etree.ElementTree as ET
 from io import BytesIO
 import requests
+import time
 
-# -----------------------------------------------------------------------------
-# 1. CONFIGURACIÓN EJECUTIVA Y ESTILOS
-# -----------------------------------------------------------------------------
+# ==============================================================================
+# 1. CONFIGURACIÓN DEL SISTEMA Y ESTILOS
+# ==============================================================================
 st.set_page_config(
-    page_title="Dashboard Reforestación | SOLEX",
-    page_icon="🌵",  # ¡El Cactus solicitado!
+    page_title="SOLEX Forest Manager | Cerrito del Carmen",
+    page_icon="🌵",
     layout="wide",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="expanded"
 )
 
+# URL por defecto (GitHub Raw)
+URL_GITHUB_DEFAULT = "https://raw.githubusercontent.com/ponsmartinluis-hub/reforestacion-pons/main/plantacion.xlsx"
 
-https://github.com/ponsmartinluis-hub/reforestacion-pons/blob/main/plantacion.xlsx
- 
-
-# Estilos CSS Profesionales (Mobile Friendly)
+# Estilos CSS Avanzados para "Look & Feel" Corporativo
 st.markdown("""
 <style>
-    /* Fondo limpio y textos oscuros para legibilidad */
-    .stApp { background-color: #f8f9fa; }
-    h1, h2, h3, h4 { color: #1b4f25; font-family: 'Helvetica Neue', sans-serif; }
+    /* Tipografía y Fondo */
+    @import url('https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;700&display=swap');
     
-    /* Métricas con estilo de tarjeta */
-    div[data-testid="metric-container"] {
-        background-color: white;
-        border-radius: 8px;
-        padding: 15px;
-        border-left: 5px solid #2e7d32;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    html, body, [class*="css"]  {
+        font-family: 'Roboto', sans-serif;
+        background-color: #f4f6f9;
+        color: #2c3e50;
     }
     
-    /* Pestañas estilo botón */
-    .stTabs [data-baseweb="tab-list"] button [data-testid="stMarkdownContainer"] p {
-        font-size: 1.1rem;
+    /* Encabezados */
+    h1 { color: #1b5e20; font-weight: 700; border-bottom: 2px solid #a5d6a7; padding-bottom: 10px; }
+    h2 { color: #2e7d32; margin-top: 20px; }
+    h3 { color: #388e3c; }
+
+    /* Tarjetas de Métricas (KPIs) */
+    div[data-testid="metric-container"] {
+        background-color: #ffffff;
+        border: 1px solid #e0e0e0;
+        padding: 20px;
+        border-radius: 10px;
+        border-left: 6px solid #2e7d32;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+        transition: transform 0.2s;
+    }
+    div[data-testid="metric-container"]:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 12px rgba(0,0,0,0.1);
+    }
+
+    /* Pestañas */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 10px;
+        background-color: #ffffff;
+        padding: 10px;
+        border-radius: 10px;
+    }
+    .stTabs [data-baseweb="tab"] {
+        height: 50px;
+        white-space: pre-wrap;
+        background-color: #f1f8e9;
+        border-radius: 5px;
+        color: #33691e;
         font-weight: 600;
     }
+    .stTabs [aria-selected="true"] {
+        background-color: #33691e !important;
+        color: #ffffff !important;
+    }
     
-    /* Ajuste para móviles: Texto siempre oscuro */
-    p, span, div { color: #2c3e50; }
+    /* Botones */
+    .stButton>button {
+        background-color: #2e7d32;
+        color: white;
+        border-radius: 5px;
+        border: none;
+    }
+    .stButton>button:hover {
+        background-color: #1b5e20;
+    }
 </style>
 """, unsafe_allow_html=True)
 
-# -----------------------------------------------------------------------------
-# 2. MOTOR DE DATOS HÍBRIDO (GITHUB + UPLOAD)
-# -----------------------------------------------------------------------------
-@st.cache_data(ttl=600) # Guarda en caché por 10 min
-def load_data(source, is_url=False):
+# ==============================================================================
+# 2. FUNCIONES DE PROCESAMIENTO DE DATOS (ETL)
+# ==============================================================================
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_and_clean_data(source, is_url=False):
+    """
+    Carga datos desde URL o archivo local, limpia nombres de columnas,
+    elimina duplicados y convierte tipos de datos.
+    """
     try:
         if is_url:
-            # Carga desde GitHub
             response = requests.get(source)
             response.raise_for_status()
             file_content = BytesIO(response.content)
             df = pd.read_excel(file_content)
         else:
-            # Carga manual
             if source.name.endswith('.csv'):
                 df = pd.read_csv(source)
             else:
                 df = pd.read_excel(source)
 
-        # --- LIMPIEZA AUTOMÁTICA (CRÍTICO) ---
-        # 1. Nombres: Quita comas, puntos y espacios
-        df.columns = df.columns.str.strip().str.replace('[,.:]', '', regex=True)
+        # 1. Normalización de Nombres de Columna
+        # Elimina espacios, puntos, comas, dos puntos y convierte a título
+        df.columns = df.columns.str.strip().str.replace(r'[,.:]', '', regex=True)
         
-        # 2. Duplicados: Si hay dos columnas 'Altura_cm', borra la segunda
+        # 2. Eliminación de Columnas Duplicadas
         df = df.loc[:, ~df.columns.duplicated()]
-        
-        # 3. Conversiones Numéricas
-        cols_num = ['Coordenada_X', 'Coordenada_Y', 'Altura_cm', 'Diametro_cm']
-        for col in cols_num:
+
+        # 3. Conversión de Tipos Numéricos
+        numeric_cols = ['Coordenada_X', 'Coordenada_Y', 'Altura_cm', 'Diametro_cm', 'Costo', 'Edad_Meses']
+        for col in numeric_cols:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
+        
+        # 4. Estandarización de Texto (Opcional pero recomendado)
+        if 'Estado_Salud' in df.columns:
+            df['Estado_Salud'] = df['Estado_Salud'].astype(str).str.capitalize()
 
         return df
     except Exception as e:
+        st.error(f"Error en el motor de datos: {str(e)}")
         return None
 
-def leer_kml(archivo_kml):
-    """Procesador de mapas KML"""
+def process_kml_polygons(kml_file):
+    """Parsea archivos KML para extraer coordenadas de polígonos"""
     zonas = []
     try:
-        string_data = archivo_kml.getvalue().decode("utf-8")
-        root = ET.fromstring(string_data)
-        ns = {'kml': 'http://www.opengis.net/kml/2.2'}
-        placemarks = root.findall('.//kml:Placemark', ns)
-        if not placemarks: placemarks = root.findall('.//{http://www.opengis.net/kml/2.2}Placemark')
-
-        for pm in placemarks:
-            nombre = pm.find('.//{http://www.opengis.net/kml/2.2}name')
-            nombre_txt = nombre.text if nombre is not None else "Zona"
-            coords = pm.find('.//{http://www.opengis.net/kml/2.2}coordinates')
-            if coords is not None and coords.text:
-                coords_raw = coords.text.strip().split()
-                puntos = []
-                for c in coords_raw:
-                    val = c.split(',')
-                    if len(val) >= 2:
-                        puntos.append([float(val[1]), float(val[0])])
-                zonas.append({'nombre': nombre_txt, 'puntos': puntos})
-    except: pass
+        content = kml_file.getvalue().decode("utf-8")
+        root = ET.fromstring(content)
+        # Namespaces comunes
+        namespaces = {'kml': 'http://www.opengis.net/kml/2.2'}
+        
+        # Búsqueda recursiva de Placemarks
+        for placemark in root.findall('.//kml:Placemark', namespaces) or root.findall('.//{http://www.opengis.net/kml/2.2}Placemark'):
+            name_tag = placemark.find('.//kml:name', namespaces) or placemark.find('.//{http://www.opengis.net/kml/2.2}name')
+            name = name_tag.text if name_tag is not None else "Zona Sin Nombre"
+            
+            coord_tag = placemark.find('.//kml:coordinates', namespaces) or placemark.find('.//{http://www.opengis.net/kml/2.2}coordinates')
+            if coord_tag is not None and coord_tag.text:
+                coords_str = coord_tag.text.strip().split()
+                points = []
+                for c in coords_str:
+                    parts = c.split(',')
+                    if len(parts) >= 2:
+                        # KML es (Lon, Lat) -> Folium quiere (Lat, Lon)
+                        points.append([float(parts[1]), float(parts[0])])
+                zonas.append({'name': name, 'points': points})
+    except Exception as e:
+        st.warning(f"No se pudo procesar el mapa KML: {e}")
     return zonas
 
-# -----------------------------------------------------------------------------
-# 3. INTERFAZ Y LÓGICA
-# -----------------------------------------------------------------------------
-st.title("🌵 Monitor Cerrito del Carmen")
-st.caption("Dashboard Ejecutivo | Datos en Tiempo Real")
+def generate_report(df):
+    """Genera un resumen textual para ejecutivos"""
+    total = len(df)
+    if total == 0: return "Sin datos."
+    
+    salud = df['Estado_Salud'].value_counts() if 'Estado_Salud' in df.columns else pd.Series()
+    top_salud = salud.idxmax() if not salud.empty else "N/D"
+    pct_salud = (salud.max() / total * 100) if not salud.empty else 0
+    
+    zonas = df['Poligono'].nunique() if 'Poligono' in df.columns else 0
+    
+    texto = f"""
+    **INFORME EJECUTIVO - CERRITO DEL CARMEN**
+    
+    El proyecto cuenta actualmente con un inventario de **{total:,} especímenes**. 
+    La operación abarca **{zonas} polígonos** distintos.
+    
+    **Estado Fitosanitario:**
+    El estado predominante es **{top_salud}**, representando el **{pct_salud:.1f}%** de la población.
+    """
+    return texto
 
-# --- CONTROL DE DATOS (SIDEBAR) ---
+# ==============================================================================
+# 3. SIDEBAR Y FILTROS GLOBALES
+# ==============================================================================
+
 with st.sidebar:
-    st.header("Fuente de Datos")
+    st.image("https://cdn-icons-png.flaticon.com/512/3028/3028569.png", width=100) # Icono de Agave/Cactus
+    st.title("Panel de Control")
+    st.markdown("---")
     
-    # 1. Opción de GitHub
-    use_github = st.checkbox("Usar GitHub (Automático)", value=True)
-    github_url = st.text_input("URL GitHub Raw", value=URL_GITHUB_DEFAULT)
+    # 3.1 Selector de Fuente
+    st.subheader("📡 Origen de Datos")
+    source_mode = st.radio("Modo de conexión:", ["GitHub (Automático)", "Carga Manual"], index=0)
     
-    # 2. Opción Manual
-    uploaded_file = st.file_uploader("O subir archivo manual (Sobreescribe)", type=['xlsx', 'csv'])
+    if source_mode == "GitHub (Automático)":
+        data_source = URL_GITHUB_DEFAULT
+        is_url_flag = True
+        st.caption(f"Conectado a: `.../plantacion.xlsx`")
+    else:
+        data_source = st.file_uploader("Sube tu Excel/CSV", type=['xlsx', 'csv'])
+        is_url_flag = False
+
+    st.markdown("---")
+    
+    # 3.2 Carga de Mapa Base
+    st.subheader("🗺️ Capas Geográficas")
+    uploaded_kml = st.file_uploader("Archivo KML (Polígonos)", type=['kml', 'xml'])
     
     st.markdown("---")
-    uploaded_kml = st.file_uploader("Cargar Mapa KML", type=['kml', 'xml'])
+    st.info("v3.0.0 | SOLEX Secure © 2025")
+
+# ==============================================================================
+# 4. LÓGICA PRINCIPAL (MAIN LOOP)
+# ==============================================================================
+
+# Carga de datos
+if data_source:
+    with st.spinner('Sincronizando con base de datos...'):
+        df_raw = load_and_clean_data(data_source, is_url=is_url_flag)
+else:
+    df_raw = None
+
+if df_raw is not None:
+    # --- FILTROS DINÁMICOS EN SIDEBAR (Ahora que tenemos datos) ---
+    with st.sidebar:
+        st.subheader("🔍 Filtros Avanzados")
+        
+        # Filtro Especie
+        if 'Tipo' in df_raw.columns:
+            all_species = sorted(df_raw['Tipo'].astype(str).unique())
+            sel_species = st.multiselect("Especies:", all_species, default=all_species)
+        else:
+            sel_species = []
+            
+        # Filtro Salud
+        if 'Estado_Salud' in df_raw.columns:
+            all_health = sorted(df_raw['Estado_Salud'].astype(str).unique())
+            sel_health = st.multiselect("Salud:", all_health, default=all_health)
+        else:
+            sel_health = []
+
+    # APLICAR FILTROS
+    df = df_raw.copy()
+    if sel_species:
+        df = df[df['Tipo'].astype(str).isin(sel_species)]
+    if sel_health:
+        df = df[df['Estado_Salud'].astype(str).isin(sel_health)]
     
-    if st.button("🔄 Recargar Datos"):
-        st.cache_data.clear()
-        st.rerun()
+    # --- ENCABEZADO Y KPIS ---
+    st.title("🌵 Monitor de Reforestación: Cerrito del Carmen")
+    st.markdown("**Dashboard Operativo y Financiero**")
+    
+    # Fila de Métricas
+    k1, k2, k3, k4 = st.columns(4)
+    
+    total_trees = len(df)
+    
+    # KPI Salud
+    if 'Estado_Salud' in df.columns:
+        saludables = df['Estado_Salud'].astype(str).str.contains('Excelente|Bueno', case=False, na=False).sum()
+        pct_salud = (saludables / total_trees * 100) if total_trees > 0 else 0
+        delta_salud = "✅ Meta Cumplida" if pct_salud >= 90 else "⚠️ Atención Requerida"
+        k2.metric("Índice de Salud", f"{pct_salud:.1f}%", delta_salud)
+    else:
+        k2.metric("Índice de Salud", "N/D")
 
-# --- LÓGICA DE CARGA ---
-df = None
-source_label = ""
+    # KPI Altura
+    if 'Altura_cm' in df.columns:
+        avg_height = df['Altura_cm'].mean()
+        k3.metric("Altura Promedio", f"{avg_height:.1f} cm")
+    else:
+        k3.metric("Altura Promedio", "N/D")
 
-if uploaded_file:
-    df = load_data(uploaded_file, is_url=False)
-    source_label = "Archivo Manual"
-elif use_github and github_url:
-    df = load_data(github_url, is_url=True)
-    source_label = "Nube GitHub"
+    # KPI Diversidad
+    if 'Tipo' in df.columns:
+        diversity = df['Tipo'].nunique()
+        k4.metric("Variedad Especies", diversity)
+    else:
+        k4.metric("Especies", "0")
+        
+    k1.metric("Inventario Total", f"{total_trees:,}", "Plantas Activas")
 
-# --- DASHBOARD ---
-if df is not None:
-    st.success(f"✅ Datos cargados exitosamente desde: **{source_label}** ({len(df)} registros)")
-
-    # TABS PRINCIPALES
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "📊 Dashboard Ejecutivo", 
-        "🗺️ Mapa Geoespacial", 
-        "💰 Proyección ROI", 
-        "📂 Base de Datos"
+    # --- PESTAÑAS DE CONTENIDO ---
+    tab_dash, tab_map, tab_bio, tab_roi, tab_data = st.tabs([
+        "📊 Dashboard Ejecutivo",
+        "🗺️ Mapa Inteligente",
+        "📏 Biometría",
+        "💰 Simulador Financiero",
+        "📝 Editor de Datos"
     ])
 
-    # === TAB 1: DASHBOARD ORGULLO ===
-    with tab1:
-        # KPIs Superiores
-        k1, k2, k3, k4 = st.columns(4)
-        total = len(df)
+    # === TAB 1: DASHBOARD EJECUTIVO ===
+    with tab_dash:
+        col_d1, col_d2 = st.columns([2, 1])
         
-        # Cálculos defensivos (por si faltan columnas)
-        salud_ok = len(df[df['Estado_Salud'].str.contains('Excelente|Bueno', case=False, na=False)]) if 'Estado_Salud' in df.columns else 0
-        tipo_top = df['Tipo'].mode()[0] if 'Tipo' in df.columns else "N/A"
-        zona_top = df['Poligono'].mode()[0] if 'Poligono' in df.columns else "N/A"
-
-        k1.metric("Total Plantado", f"{total:,}", delta="Inventario")
-        k2.metric("Tasa Supervivencia", f"{(salud_ok/total)*100:.1f}%" if total>0 else "0%", delta="Meta > 90%")
-        k3.metric("Especie Dominante", tipo_top)
-        k4.metric("Zona Más Densa", zona_top)
-
-        st.divider()
-
-        # GRÁFICOS PREMIUM
-        col_g1, col_g2 = st.columns([2, 1])
-        
-        with col_g1:
-            st.subheader("Distribución Jerárquica")
+        with col_d1:
+            st.subheader("Distribución de Inventario")
             if 'Poligono' in df.columns and 'Tipo' in df.columns:
-                # GRÁFICO SUNBURST (Muy vistoso)
-                # Muestra Zona -> Tipo -> Salud en anillos concéntricos
-                cols_path = ['Poligono', 'Tipo']
-                if 'Estado_Salud' in df.columns: cols_path.append('Estado_Salud')
+                # Sunburst Chart (Interactiva y Jerárquica)
+                path_cols = ['Poligono', 'Tipo']
+                if 'Estado_Salud' in df.columns: path_cols.append('Estado_Salud')
                 
                 fig_sun = px.sunburst(
-                    df, path=cols_path, 
-                    title="Radiografía del Proyecto (Click para profundizar)",
+                    df, path=path_cols,
+                    title="Jerarquía: Zona > Especie > Estado",
                     color_discrete_sequence=px.colors.qualitative.Pastel
                 )
-                fig_sun.update_layout(height=500)
+                fig_sun.update_layout(height=500, margin=dict(t=30, l=0, r=0, b=0))
                 st.plotly_chart(fig_sun, use_container_width=True)
             else:
-                st.info("Faltan columnas Poligono/Tipo para el gráfico jerárquico.")
+                st.warning("Se requieren columnas 'Poligono' y 'Tipo' para visualizar la jerarquía.")
 
-        with col_g2:
-            st.subheader("Salud General")
+        with col_d2:
+            st.subheader("Resumen Fitosanitario")
             if 'Estado_Salud' in df.columns:
-                fig_pie = px.donut(df, names='Estado_Salud', hole=0.5, 
-                                   color_discrete_sequence=['#66bb6a', '#ffee58', '#ef5350', '#bdbdbd'])
-                fig_pie.update_layout(showlegend=False, height=400)
-                # Añadir anotación central
-                fig_pie.add_annotation(text=f"{salud_ok}", showarrow=False, font_size=40, font_color="#1b4f25")
-                fig_pie.add_annotation(text="Sanos", showarrow=False, y=-0.15, font_size=15)
-                st.plotly_chart(fig_pie, use_container_width=True)
+                # Donut Chart con anotación central
+                fig_don = px.donut(
+                    df, names='Estado_Salud', hole=0.6,
+                    color_discrete_sequence=['#4caf50', '#cddc39', '#ff9800', '#f44336', '#9e9e9e']
+                )
+                fig_don.update_layout(showlegend=False, height=300)
+                fig_don.add_annotation(text=f"{pct_salud:.0f}%", font_size=40, showarrow=False, textangle=0)
+                fig_don.add_annotation(text="Sanos", y=-0.2, showarrow=False)
+                st.plotly_chart(fig_don, use_container_width=True)
+                
+                # Barras simples
+                conteo_salud = df['Estado_Salud'].value_counts().reset_index()
+                conteo_salud.columns = ['Estado', 'Cant']
+                st.dataframe(conteo_salud, use_container_width=True, hide_index=True)
 
-        # GRÁFICO DE BARRAS DE ESPECIES
-        if 'Tipo' in df.columns:
-            conteo_tipos = df['Tipo'].value_counts().reset_index()
-            conteo_tipos.columns = ['Especie', 'Cantidad']
-            fig_bar = px.bar(conteo_tipos, x='Especie', y='Cantidad', text='Cantidad',
-                             color='Cantidad', color_continuous_scale='Greens',
-                             title="Inventario por Especie")
-            st.plotly_chart(fig_bar, use_container_width=True)
+        st.markdown("---")
+        st.markdown(generate_report(df))
 
-    # === TAB 2: MAPA ===
-    with tab2:
-        c_map, c_ctrl = st.columns([3, 1])
-        with c_ctrl:
-            st.markdown("### Filtros de Mapa")
-            if 'Tipo' in df.columns:
-                filtro_tipo_mapa = st.multiselect("Especie", df['Tipo'].unique(), default=df['Tipo'].unique())
-            else:
-                filtro_tipo_mapa = []
+    # === TAB 2: MAPA INTELIGENTE ===
+    with tab_map:
+        st.subheader("Georreferenciación Avanzada")
+        
+        col_m1, col_m2 = st.columns([3, 1])
+        
+        with col_m2:
+            st.markdown("##### Configuración de Capas")
+            show_heatmap = st.checkbox("Ver Mapa de Calor (Densidad)", value=False)
+            show_clusters = st.checkbox("Agrupar Marcadores (Clusters)", value=True)
+            st.info("💡 Usa Clusters si el mapa se pone lento.")
             
-            st.info("🟢 Verde: Saludable\n🟠 Naranja: Regular\n🔴 Rojo: Crítico")
+            st.divider()
+            st.markdown("**Leyenda:**")
+            st.markdown("🟢 **Excelente**")
+            st.markdown("🟡 **Regular**")
+            st.markdown("🔴 **Crítico/Muerto**")
 
-        with c_map:
-            if 'Coordenada_X' in df.columns:
-                # Centrado automático
-                lat = df['Coordenada_X'].mean() if not df['Coordenada_X'].isnull().all() else 21.23
-                lon = df['Coordenada_Y'].mean() if not df['Coordenada_Y'].isnull().all() else -100.46
+        with col_m1:
+            if 'Coordenada_X' in df.columns and 'Coordenada_Y' in df.columns:
+                # Calcular centro
+                lat_mean = df['Coordenada_X'].mean() if not df['Coordenada_X'].isna().all() else 21.23
+                lon_mean = df['Coordenada_Y'].mean() if not df['Coordenada_Y'].isna().all() else -100.46
                 
-                m = folium.Map(location=[lat, lon], zoom_start=18, tiles="OpenStreetMap")
+                m = folium.Map(location=[lat_mean, lon_mean], zoom_start=18, tiles="OpenStreetMap")
                 
-                # Capa KML
+                # 1. Capa Polígonos (KML)
                 if uploaded_kml:
-                    zonas = leer_kml(uploaded_kml)
-                    colors = ['#4285F4', '#EA4335', '#FBBC05', '#34A853']
-                    for i, z in enumerate(zonas):
-                        folium.Polygon(z['puntos'], color=colors[i%4], fill=True, fill_opacity=0.1, popup=z['nombre']).add_to(m)
+                    zonas_kml = process_kml_polygons(uploaded_kml)
+                    colors = ['#1e88e5', '#d81b60', '#fbc02d', '#43a047']
+                    for i, z in enumerate(zonas_kml):
+                        folium.Polygon(
+                            locations=z['points'],
+                            popup=z['name'],
+                            color=colors[i % len(colors)],
+                            fill=True, fill_opacity=0.1
+                        ).add_to(m)
                 
-                # Capa Puntos
-                df_map = df[df['Tipo'].isin(filtro_tipo_mapa)] if filtro_tipo_mapa else df
-                df_map = df_map.dropna(subset=['Coordenada_X'])
+                # Filtrar puntos válidos
+                df_geo = df.dropna(subset=['Coordenada_X', 'Coordenada_Y'])
                 
-                for _, row in df_map.iterrows():
-                    color = '#2e7d32' # Verde Maguey
-                    estado = str(row.get('Estado_Salud','')).lower()
-                    if 'crítico' in estado or 'muerto' in estado: color = '#c62828'
-                    elif 'regular' in estado: color = '#f9a825'
+                # 2. Capa Mapa de Calor
+                if show_heatmap and not df_geo.empty:
+                    heat_data = [[row['Coordenada_X'], row['Coordenada_Y']] for index, row in df_geo.iterrows()]
+                    HeatMap(heat_data, radius=15).add_to(m)
+                
+                # 3. Capa Marcadores
+                marker_layer = MarkerCluster().add_to(m) if show_clusters else m
+                
+                for _, row in df_geo.iterrows():
+                    # Color logic
+                    status = str(row.get('Estado_Salud', '')).lower()
+                    if 'crítico' in status or 'muerto' in status:
+                        icon_color = 'red'
+                        icon_icon = 'times'
+                    elif 'regular' in status or 'estrés' in status:
+                        icon_color = 'orange'
+                        icon_icon = 'exclamation'
+                    else:
+                        icon_color = 'green'
+                        icon_icon = 'tree'
                     
-                    folium.CircleMarker(
-                        [row['Coordenada_X'], row['Coordenada_Y']],
-                        radius=5, color=color, fill=True, fill_opacity=0.8,
-                        tooltip=f"{row.get('Tipo','')} | {row.get('Poligono','')}"
-                    ).add_to(m)
+                    folium.Marker(
+                        location=[row['Coordenada_X'], row['Coordenada_Y']],
+                        popup=f"<b>{row.get('ID_Especimen', 'ID?')}</b><br>{row.get('Tipo', '')}<br>{row.get('Estado_Salud','')}",
+                        icon=folium.Icon(color=icon_color, icon=icon_icon, prefix='fa')
+                    ).add_to(marker_layer)
                 
                 st_folium(m, width="100%", height=600)
+            else:
+                st.warning("⚠️ No se detectaron columnas de coordenadas GPS (Coordenada_X, Coordenada_Y).")
 
-    # === TAB 3: ROI (FINANZAS) ===
-    with tab3:
-        st.subheader("💰 Simulador de Retorno de Inversión")
+    # === TAB 3: BIOMETRÍA Y ESTADÍSTICAS ===
+    with tab_bio:
+        st.subheader("Análisis de Crecimiento")
         
-        col_in, col_res = st.columns([1, 2])
+        if 'Altura_cm' in df.columns and 'Diametro_cm' in df.columns:
+            col_b1, col_b2 = st.columns([2, 1])
+            
+            with col_b1:
+                # Scatter Plot con Tendencia
+                st.markdown("#### Correlación Altura vs Diámetro")
+                fig_scatter = px.scatter(
+                    df, x='Diametro_cm', y='Altura_cm',
+                    color='Tipo' if 'Tipo' in df.columns else None,
+                    size='Altura_cm',
+                    hover_data=df.columns,
+                    trendline="ols", # Línea de tendencia automática
+                    title="Modelo de Crecimiento Alométrico"
+                )
+                st.plotly_chart(fig_scatter, use_container_width=True)
+                
+            with col_b2:
+                st.markdown("#### Distribución (Box Plot)")
+                # Box Plot para ver outliers
+                fig_box = px.box(df, y="Altura_cm", x="Tipo" if 'Tipo' in df.columns else None, 
+                                 points="all", title="Dispersión de Alturas")
+                st.plotly_chart(fig_box, use_container_width=True)
+                
+            st.divider()
+            
+            # Histograma
+            st.markdown("#### Histograma de Frecuencias")
+            fig_hist = px.histogram(df, x="Altura_cm", nbins=20, color="Tipo" if 'Tipo' in df.columns else None,
+                                    title="¿Cuántos árboles hay por rango de altura?")
+            st.plotly_chart(fig_hist, use_container_width=True)
+            
+        else:
+            st.info("Esta sección requiere columnas numéricas 'Altura_cm' y 'Diametro_cm' para activarse.")
+
+    # === TAB 4: SIMULADOR FINANCIERO (ROI) ===
+    with tab_roi:
+        st.subheader("💰 Proyección de Retorno de Inversión")
+        st.markdown("Modelo financiero simplificado para cultivo de **Maguey/Agave**.")
         
-        with col_in:
-            with st.expander("Parámetros del Modelo", expanded=True):
-                costo_inicial = st.number_input("Costo por Planta ($)", 50.0)
-                mant_anual = st.number_input("Mantenimiento Anual ($)", 15.0)
-                anos = st.slider("Años a Cosecha", 3, 15, 7)
-                precio_venta = st.number_input("Precio Venta ($/Piña)", 900.0)
-                riesgo = st.slider("Riesgo de Merma (%)", 0, 50, 10) / 100
+        c_input, c_results = st.columns([1, 2])
         
-        with col_res:
-            # Cálculos en tiempo real
+        with c_input:
+            with st.expander("🛠️ Parámetros del Modelo", expanded=True):
+                st.markdown("**Costos**")
+                costo_unitario = st.number_input("Costo Plantación ($/planta)", value=60.0, step=5.0)
+                manto_anual = st.number_input("Mantenimiento Anual ($/planta)", value=25.0, step=5.0)
+                
+                st.markdown("**Ventas**")
+                precio_mercado = st.number_input("Precio Venta Piña ($)", value=950.0, step=50.0)
+                anios_cosecha = st.slider("Ciclo de Maduración (Años)", 4, 12, 7)
+                riesgo_merma = st.slider("Factor Riesgo/Merma (%)", 0, 40, 15) / 100
+        
+        with c_results:
+            # Lógica de cálculo
             if 'Tipo' in df.columns:
-                # Asumimos que todo lo que dice "Maguey" o "Agave" cuenta
-                n_plantas = len(df[df['Tipo'].str.contains("Maguey|Agave|Mezquite", case=False, na=False)])
+                target_plants = df[df['Tipo'].str.contains("Maguey|Agave|Mezquite", case=False, na=False)]
+                n_plantas = len(target_plants)
+                st.success(f"Cálculo basado en **{n_plantas}** unidades productivas (Agave/Mezquite) detectadas.")
             else:
                 n_plantas = len(df)
+                st.warning(f"Calculando sobre el total de **{n_plantas}** registros (Sin filtrar especie).")
             
-            st.info(f"Calculando sobre **{n_plantas}** unidades productivas detectadas.")
-            
-            inversion_total = (costo_inicial + (mant_anual * anos)) * n_plantas
-            plantas_finales = n_plantas * (1 - riesgo)
-            ventas_totales = plantas_finales * precio_venta
-            utilidad = ventas_totales - inversion_total
-            roi = (utilidad / inversion_total) * 100 if inversion_total > 0 else 0
-            
-            # Gráfico de Cascada (Waterfall) para Finanzas
-            fig_fin = px.bar(
-                x=['Inversión Total', 'Ingresos Brutos', 'Utilidad Neta'],
-                y=[inversion_total, ventas_totales, utilidad],
-                color=['Gastos', 'Ingresos', 'Ganancia'],
-                color_discrete_map={'Gastos':'#ef5350', 'Ingresos':'#42a5f5', 'Ganancia':'#66bb6a'},
-                text_auto='.2s',
-                title=f"Proyección Financiera a {anos} años"
-            )
-            st.plotly_chart(fig_fin, use_container_width=True)
-            
-            m1, m2 = st.columns(2)
-            m1.metric("ROI Estimado", f"{roi:.1f}%", delta="Rentabilidad")
-            m2.metric("Utilidad Neta", f"${utilidad:,.0f}", delta="Cash Flow")
+            # Matemáticas Financieras
+            if n_plantas > 0:
+                inversion_inicial = n_plantas * costo_unitario
+                gasto_manto_total = n_plantas * manto_anual * anios_cosecha
+                costo_total_proyecto = inversion_inicial + gasto_manto_total
+                
+                plantas_finales = n_plantas * (1 - riesgo_merma)
+                ingreso_bruto = plantas_finales * precio_mercado
+                
+                utilidad_neta = ingreso_bruto - costo_total_proyecto
+                roi_pct = (utilidad_neta / costo_total_proyecto) * 100
+                
+                # Visualización de Resultados
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Costo Total Proyecto", f"${costo_total_proyecto:,.0f}")
+                m2.metric("Ventas Proyectadas", f"${ingreso_bruto:,.0f}")
+                m3.metric("Utilidad Neta", f"${utilidad_neta:,.0f}", delta=f"ROI: {roi_pct:.1f}%")
+                
+                # Gráfico Waterfall
+                fig_water = go.Figure(go.Waterfall(
+                    name = "Flujo", orientation = "v",
+                    measure = ["relative", "relative", "total", "relative", "total"],
+                    x = ["Inv. Inicial", "Mantenimiento", "Costo Total", "Venta Cosecha", "Resultado"],
+                    textposition = "outside",
+                    text = [f"-{inversion_inicial/1000:.1f}k", f"-{gasto_manto_total/1000:.1f}k", "", f"+{ingreso_bruto/1000:.1f}k", ""],
+                    y = [-inversion_inicial, -gasto_manto_total, 0, ingreso_bruto, 0],
+                    connector = {"line":{"color":"rgb(63, 63, 63)"}},
+                ))
+                fig_water.update_layout(title = "Cascada de Flujo de Efectivo", showlegend = False)
+                st.plotly_chart(fig_water, use_container_width=True)
+            else:
+                st.error("No hay plantas suficientes para calcular.")
 
-    # === TAB 4: DATOS ===
-    with tab4:
-        st.subheader("Base de Datos Maestra")
-        st.dataframe(df, use_container_width=True)
+    # === TAB 5: EDITOR DE DATOS ===
+    with tab_data:
+        st.subheader("📝 Gestión de Base de Datos")
+        st.markdown("Aquí puedes editar datos erróneos temporalmente y descargar la versión corregida.")
+        
+        # Editor Interactivo
+        df_edited = st.data_editor(
+            df,
+            num_rows="dynamic",
+            use_container_width=True,
+            column_config={
+                "Estado_Salud": st.column_config.SelectboxColumn(
+                    "Salud",
+                    help="Categoría de estado fitosanitario",
+                    width="medium",
+                    options=["Excelente", "Bueno", "Regular", "Estrés Hídrico", "Plaga", "Crítico", "Muerto"],
+                ),
+                "Altura_cm": st.column_config.NumberColumn(
+                    "Altura (cm)",
+                    min_value=0,
+                    max_value=1000,
+                    step=1,
+                    format="%d cm"
+                )
+            }
+        )
+        
+        st.divider()
+        
+        col_dl1, col_dl2 = st.columns(2)
+        with col_dl1:
+            st.info(f"Mostrando {len(df_edited)} registros.")
+        with col_dl2:
+            # Botón de Descarga
+            output = BytesIO()
+            with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+                df_edited.to_excel(writer, index=False)
+            
+            st.download_button(
+                label="📥 Descargar Excel Actualizado",
+                data=output.getvalue(),
+                file_name=f"Reforestacion_PONS_{pd.Timestamp.now().strftime('%Y%m%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
 
 else:
-    st.warning("⚠️ No se pudieron cargar datos.")
-    st.markdown(f"Verifica la URL de GitHub en la configuración o sube el archivo manual. \n\n URL actual intentada: `{github_url}`")
+    # Pantalla de Carga Inicial / Error
+    st.container()
+    st.markdown("### ⏳ Esperando conexión de datos...")
+    st.info("Si esto tarda mucho, verifica que la URL de GitHub sea pública o sube el archivo manualmente en la barra lateral.")
